@@ -1,35 +1,143 @@
 /**
  * UR Local Solar Sydney — Solar CRM
- * Built with React + plain CSS (no Tailwind required) + localStorage
- * Structured for future integration with Google Sheets, Airtable, Supabase, or Firebase
+ * Built with React + plain CSS (no Tailwind required) + Supabase backend
+ * Falls back to localStorage automatically if Supabase isn't configured,
+ * so the app still works standalone during development.
  *
- * Architecture note:
- *   All data access goes through the `storageAdapter` object at the top.
- *   To swap to a remote backend, replace the functions in that object only.
+ * SETUP: This file needs TWO companion files in src/:
+ *   - App.css   (styling)
+ *   - index.css (full-width root fix)
  *
- * SETUP: This file needs ONE companion file — App.css — placed in the same
- * folder (src/App.css). Copy that file's contents from the second artifact.
- * Then make sure src/main.jsx imports './App.css' or this file imports it
- * directly (it already does below).
+ * BACKEND: Set your Supabase credentials below in SUPABASE_URL and
+ * SUPABASE_ANON_KEY. The "leads" table must already exist (see the SQL
+ * provided separately). All team members using this same URL/key will
+ * see and edit the same shared data in real time.
  */
 
 import { useState, useEffect, useMemo, useCallback } from "react";
+import { createClient } from "@supabase/supabase-js";
 import "./App.css";
 
+// Small numeric helper needed by the storage adapter below (kept here,
+// near the top, since toDbRow/fromDbRow depend on it)
+const fmt = (val) => {
+  const n = parseFloat(val);
+  return isNaN(n) ? 0 : n;
+};
+
 // ─────────────────────────────────────────────
-// STORAGE ADAPTER — swap this for remote backend
+// SUPABASE CONFIG — fill these in with your project's values
+// Find them in Supabase: Project Settings → API
 // ─────────────────────────────────────────────
+const SUPABASE_URL = "https://aabuazayxcjxkhwwfbfi.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_Qxge_nkaNB8jZALQ4c0B5A_o0jQtyJP";
+
+const supabase = (SUPABASE_URL && SUPABASE_ANON_KEY)
+  ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+  : null;
+
+// ─────────────────────────────────────────────
+// FIELD MAPPING — our app uses camelCase, Postgres uses snake_case
+// ─────────────────────────────────────────────
+const toDbRow = (lead) => ({
+  id: lead.id,
+  name: lead.name,
+  address: lead.address,
+  email: lead.email,
+  phone: lead.phone,
+  status: lead.status,
+  needs_follow_up: lead.needsFollowUp,
+  appointment_date: lead.appointmentDate || null,
+  system_proposed: lead.systemProposed,
+  appointment_notes: lead.appointmentNotes,
+  cost_price: lead.costPrice === "" ? null : fmt(lead.costPrice),
+  sale_price: lead.salePrice === "" ? null : fmt(lead.salePrice),
+  follow_up_date: lead.followUpDate || null,
+  follow_up_notes: lead.followUpNotes,
+  required_action: lead.requiredAction,
+  reason_lost: lead.reasonLost,
+  customer_feedback: lead.customerFeedback,
+  deposit_paid: lead.depositPaid,
+  installation_status: lead.installationStatus,
+  next_action: lead.nextAction,
+  timeline: lead.timeline || [],
+  created_at: lead.createdAt,
+  updated_at: lead.updatedAt,
+});
+
+const fromDbRow = (row) => ({
+  id: row.id,
+  name: row.name || "",
+  address: row.address || "",
+  email: row.email || "",
+  phone: row.phone || "",
+  status: row.status || "New Lead",
+  needsFollowUp: row.needs_follow_up || false,
+  appointmentDate: row.appointment_date || "",
+  systemProposed: row.system_proposed || "",
+  appointmentNotes: row.appointment_notes || "",
+  costPrice: row.cost_price ?? "",
+  salePrice: row.sale_price ?? "",
+  followUpDate: row.follow_up_date || "",
+  followUpNotes: row.follow_up_notes || "",
+  requiredAction: row.required_action || "",
+  reasonLost: row.reason_lost || "",
+  customerFeedback: row.customer_feedback || "",
+  depositPaid: row.deposit_paid || false,
+  installationStatus: row.installation_status || "",
+  nextAction: row.next_action || "",
+  timeline: row.timeline || [],
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+});
+
+// ─────────────────────────────────────────────
+// STORAGE ADAPTER
+// Uses Supabase when configured; falls back to localStorage otherwise.
+// All functions are async so the rest of the app can treat both the
+// same way.
+// ─────────────────────────────────────────────
+const LOCAL_KEY = "urlocalsolar_leads";
+
 const storageAdapter = {
-  getLeads: () => {
+  // Fetch all leads
+  getLeads: async () => {
+    if (supabase) {
+      const { data, error } = await supabase.from("leads").select("*").order("created_at", { ascending: false });
+      if (error) {
+        console.error("Supabase getLeads error:", error.message);
+        return [];
+      }
+      return (data || []).map(fromDbRow);
+    }
     try {
-      return JSON.parse(localStorage.getItem("urlocalsolar_leads") || "[]");
+      return JSON.parse(localStorage.getItem(LOCAL_KEY) || "[]");
     } catch {
       return [];
     }
   },
-  saveLeads: (leads) => {
-    localStorage.setItem("urlocalsolar_leads", JSON.stringify(leads));
+
+  // Insert or update a single lead (upsert by id)
+  saveLead: async (lead, allLeadsForFallback) => {
+    if (supabase) {
+      const { error } = await supabase.from("leads").upsert(toDbRow(lead));
+      if (error) console.error("Supabase saveLead error:", error.message);
+      return;
+    }
+    localStorage.setItem(LOCAL_KEY, JSON.stringify(allLeadsForFallback));
   },
+
+  // Delete a single lead by id
+  deleteLead: async (id, allLeadsForFallback) => {
+    if (supabase) {
+      const { error } = await supabase.from("leads").delete().eq("id", id);
+      if (error) console.error("Supabase deleteLead error:", error.message);
+      return;
+    }
+    localStorage.setItem(LOCAL_KEY, JSON.stringify(allLeadsForFallback));
+  },
+
+  isRemote: !!supabase,
 };
 
 // ─────────────────────────────────────────────
@@ -66,6 +174,11 @@ const BLANK_LEAD = {
   email: "",
   phone: "",
   status: "New Lead",
+  // needsFollowUp is independent of status — a lead can be "Proposal Sent"
+  // AND need a follow-up at the same time. The "Needs Follow Up" status
+  // option still exists for leads where that IS the primary state, but
+  // this toggle lets ANY status also carry follow-up details.
+  needsFollowUp: false,
   appointmentDate: "",
   systemProposed: "",
   appointmentNotes: "",
@@ -88,11 +201,6 @@ const BLANK_LEAD = {
 // HELPERS
 // ─────────────────────────────────────────────
 const uid = () => `lead_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-
-const fmt = (val) => {
-  const n = parseFloat(val);
-  return isNaN(n) ? 0 : n;
-};
 
 const fmtCurrency = (val) =>
   new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD", minimumFractionDigits: 0 }).format(val || 0);
@@ -161,7 +269,7 @@ const getDateRange = (rangeType, customFrom, customTo) => {
 // CSV export
 const toCSV = (leads) => {
   const headers = [
-    "Name", "Address", "Email", "Phone", "Status",
+    "Name", "Address", "Email", "Phone", "Status", "Needs Follow Up",
     "Appointment Date", "System Proposed", "Cost Price ($)", "Sale Price ($)",
     "Gross Profit ($)", "Margin (%)", "Appointment Notes",
     "Follow Up Date", "Follow Up Notes", "Required Action",
@@ -170,7 +278,7 @@ const toCSV = (leads) => {
     "Created", "Updated",
   ];
   const rows = leads.map((l) => [
-    l.name, l.address, l.email, l.phone, l.status,
+    l.name, l.address, l.email, l.phone, l.status, l.needsFollowUp ? "Yes" : "No",
     fmtDateTime(l.appointmentDate), l.systemProposed,
     fmt(l.costPrice), fmt(l.salePrice),
     calcProfit(l.salePrice, l.costPrice).toFixed(2),
@@ -265,6 +373,69 @@ const Btn = ({ variant = "primary", children, className = "", ...props }) => (
 );
 
 // ─────────────────────────────────────────────
+// ADDRESS AUTOCOMPLETE (free, no API key — OpenStreetMap Nominatim)
+// Restricted to Australia via countrycodes=au. Debounced to avoid
+// hammering the free public API on every keystroke.
+// ─────────────────────────────────────────────
+const AddressAutocomplete = ({ value, onChange }) => {
+  const [query, setQuery] = useState(value || "");
+  const [suggestions, setSuggestions] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [showList, setShowList] = useState(false);
+
+  useEffect(() => { setQuery(value || ""); }, [value]);
+
+  useEffect(() => {
+    if (!query || query.length < 4 || !showList) { setSuggestions([]); return; }
+    const handle = setTimeout(async () => {
+      setLoading(true);
+      try {
+        const res = await fetch(
+          `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&countrycodes=au&limit=5&q=${encodeURIComponent(query)}`,
+          { headers: { "Accept-Language": "en-AU" } }
+        );
+        const data = await res.json();
+        setSuggestions(data || []);
+      } catch {
+        setSuggestions([]);
+      } finally {
+        setLoading(false);
+      }
+    }, 450); // debounce so we don't spam the free API on every keystroke
+    return () => clearTimeout(handle);
+  }, [query, showList]);
+
+  const handleSelect = (place) => {
+    setQuery(place.display_name);
+    onChange(place.display_name);
+    setSuggestions([]);
+    setShowList(false);
+  };
+
+  return (
+    <div className="address-autocomplete">
+      <Input
+        value={query}
+        onChange={(e) => { setQuery(e.target.value); onChange(e.target.value); setShowList(true); }}
+        onFocus={() => setShowList(true)}
+        onBlur={() => setTimeout(() => setShowList(false), 150)}
+        placeholder="Start typing an Australian address..."
+      />
+      {showList && (loading || suggestions.length > 0) && (
+        <div className="address-suggestions">
+          {loading && <div className="address-suggestion-loading">Searching addresses...</div>}
+          {!loading && suggestions.map((s) => (
+            <div key={s.place_id} className="address-suggestion-item" onClick={() => handleSelect(s)}>
+              {s.display_name}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ─────────────────────────────────────────────
 // LEAD FORM MODAL
 // ─────────────────────────────────────────────
 const LeadFormModal = ({ initial, onSave, onClose }) => {
@@ -303,7 +474,7 @@ const LeadFormModal = ({ initial, onSave, onClose }) => {
     setNewNote("");
   };
 
-  const isFollowUp = form.status === "Needs Follow Up";
+  const isFollowUp = form.needsFollowUp;
   const isLost = form.status === "Lost / Not Proceeding";
   const isWon = form.status === "Won / Accepted";
 
@@ -331,7 +502,7 @@ const LeadFormModal = ({ initial, onSave, onClose }) => {
               <Input type="email" value={form.email} onChange={(e) => set("email", e.target.value)} placeholder="email@example.com" />
             </Field>
             <Field label="Address">
-              <Input value={form.address} onChange={(e) => set("address", e.target.value)} placeholder="123 Sun St, Sydney NSW" />
+              <AddressAutocomplete value={form.address} onChange={(val) => set("address", val)} />
             </Field>
           </div>
 
@@ -344,6 +515,19 @@ const LeadFormModal = ({ initial, onSave, onClose }) => {
             <Field label="Appointment Date & Time">
               <Input type="datetime-local" value={form.appointmentDate} onChange={(e) => set("appointmentDate", e.target.value)} />
             </Field>
+          </div>
+
+          <div className="follow-up-toggle-row">
+            <input
+              type="checkbox"
+              id="needsFollowUp"
+              checked={form.needsFollowUp}
+              onChange={(e) => set("needsFollowUp", e.target.checked)}
+              className="checkbox"
+            />
+            <label htmlFor="needsFollowUp" className="follow-up-toggle-label">
+              🔔 This lead also needs a follow-up (works alongside any status)
+            </label>
           </div>
 
           {isFollowUp && (
@@ -496,8 +680,9 @@ const LeadDetailModal = ({ lead, onEdit, onClose }) => (
       <div className="modal-body">
         <div className="badge-row">
           <StatusBadge status={lead.status} />
+          {lead.needsFollowUp && <span className="badge badge-followup">🔔 Follow-up</span>}
           {isToday(lead.appointmentDate) && <span className="tag tag-amber">📅 Appointment Today</span>}
-          {isOverdue(lead.followUpDate) && <span className="tag tag-red">⚠️ Follow-Up Overdue</span>}
+          {lead.needsFollowUp && isOverdue(lead.followUpDate) && <span className="tag tag-red">⚠️ Follow-Up Overdue</span>}
         </div>
         <div className="detail-grid">
           <div><p className="detail-label">Address</p><p className="detail-value">{lead.address || "—"}</p></div>
@@ -517,7 +702,7 @@ const LeadDetailModal = ({ lead, onEdit, onClose }) => (
         {lead.appointmentNotes && (
           <div><p className="detail-label">Appointment Notes</p><p className="note-box">{lead.appointmentNotes}</p></div>
         )}
-        {lead.status === "Needs Follow Up" && (
+        {lead.needsFollowUp && (
           <div className="panel panel-orange">
             <p className="panel-title panel-title-orange">Follow-Up</p>
             <p><span className="muted">Date:</span> {fmtDate(lead.followUpDate)}</p>
@@ -585,9 +770,9 @@ const Dashboard = ({ leads, onAddLead, onViewLead }) => {
     .sort((a, b) => new Date(a.appointmentDate) - new Date(b.appointmentDate))
     .slice(0, 5);
 
-  const overdueFollowUps = leads.filter((l) => l.status === "Needs Follow Up" && isOverdue(l.followUpDate));
+  const overdueFollowUps = leads.filter((l) => l.needsFollowUp && isOverdue(l.followUpDate));
   const upcomingFollowUps = leads
-    .filter((l) => l.status === "Needs Follow Up" && l.followUpDate && !isOverdue(l.followUpDate))
+    .filter((l) => l.needsFollowUp && l.followUpDate && !isOverdue(l.followUpDate))
     .sort((a, b) => new Date(a.followUpDate) - new Date(b.followUpDate))
     .slice(0, 5);
 
@@ -798,6 +983,7 @@ const LeadsTable = ({ leads, onAdd, onEdit, onView, onDelete }) => {
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState("All");
   const [filterWonLost, setFilterWonLost] = useState("All");
+  const [filterFollowUp, setFilterFollowUp] = useState("All");
   const [sortField, setSortField] = useState("createdAt");
   const [sortDir, setSortDir] = useState("desc");
 
@@ -812,6 +998,8 @@ const LeadsTable = ({ leads, onAdd, onEdit, onView, onDelete }) => {
     if (filterStatus !== "All") rows = rows.filter((l) => l.status === filterStatus);
     if (filterWonLost === "Won") rows = rows.filter((l) => l.status === "Won / Accepted");
     if (filterWonLost === "Lost") rows = rows.filter((l) => l.status === "Lost / Not Proceeding");
+    if (filterFollowUp === "Yes") rows = rows.filter((l) => l.needsFollowUp);
+    if (filterFollowUp === "No") rows = rows.filter((l) => !l.needsFollowUp);
 
     rows.sort((a, b) => {
       let va = a[sortField] ?? "";
@@ -822,7 +1010,7 @@ const LeadsTable = ({ leads, onAdd, onEdit, onView, onDelete }) => {
       return 0;
     });
     return rows;
-  }, [leads, search, filterStatus, filterWonLost, sortField, sortDir]);
+  }, [leads, search, filterStatus, filterWonLost, filterFollowUp, sortField, sortDir]);
 
   const toggleSort = (field) => {
     if (sortField === field) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -860,8 +1048,13 @@ const LeadsTable = ({ leads, onAdd, onEdit, onView, onDelete }) => {
           <option value="Won">Won Only</option>
           <option value="Lost">Lost Only</option>
         </select>
-        {(search || filterStatus !== "All" || filterWonLost !== "All") && (
-          <Btn variant="ghost" onClick={() => { setSearch(""); setFilterStatus("All"); setFilterWonLost("All"); }}>✕ Clear</Btn>
+        <select value={filterFollowUp} onChange={(e) => setFilterFollowUp(e.target.value)} className="select">
+          <option value="All">Follow-up: All</option>
+          <option value="Yes">Needs Follow-up</option>
+          <option value="No">No Follow-up</option>
+        </select>
+        {(search || filterStatus !== "All" || filterWonLost !== "All" || filterFollowUp !== "All") && (
+          <Btn variant="ghost" onClick={() => { setSearch(""); setFilterStatus("All"); setFilterWonLost("All"); setFilterFollowUp("All"); }}>✕ Clear</Btn>
         )}
       </div>
 
@@ -887,11 +1080,15 @@ const LeadsTable = ({ leads, onAdd, onEdit, onView, onDelete }) => {
                 const profit = calcProfit(l.salePrice, l.costPrice);
                 const margin = calcMargin(l.salePrice, l.costPrice);
                 const apptToday = isToday(l.appointmentDate);
-                const followOverdue = l.status === "Needs Follow Up" && isOverdue(l.followUpDate);
+                const followOverdue = l.needsFollowUp && isOverdue(l.followUpDate);
                 return (
                   <tr key={l.id} className={`${apptToday ? "row-today" : ""} ${followOverdue ? "row-overdue" : ""}`} onClick={() => onView(l)}>
                     <td><p className="cell-name">{l.name}</p><p className="cell-sub">{l.phone || l.email || "—"}</p></td>
-                    <td><StatusBadge status={l.status} />{followOverdue && <span className="cell-overdue">⚠️ Overdue</span>}</td>
+                    <td>
+                      <StatusBadge status={l.status} />
+                      {l.needsFollowUp && <span className="badge badge-followup">🔔 Follow-up</span>}
+                      {followOverdue && <span className="cell-overdue">⚠️ Overdue</span>}
+                    </td>
                     <td className="cell-nowrap">{apptToday ? <span className="text-amber-strong">🌟 Today</span> : fmtDateTime(l.appointmentDate)}</td>
                     <td>{l.systemProposed || "—"}</td>
                     <td className="cell-bold">{l.salePrice ? fmtCurrency(l.salePrice) : "—"}</td>
@@ -1031,7 +1228,8 @@ const Reports = ({ leads }) => {
 // ROOT APP
 // ─────────────────────────────────────────────
 export default function App() {
-  const [leads, setLeads] = useState(() => storageAdapter.getLeads());
+  const [leads, setLeads] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [view, setView] = useState("dashboard");
   const [formOpen, setFormOpen] = useState(false);
   const [editLead, setEditLead] = useState(null);
@@ -1039,12 +1237,22 @@ export default function App() {
   const [deleteLead, setDeleteLead] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  useEffect(() => { storageAdapter.saveLeads(leads); }, [leads]);
+  // Load leads once on mount. With Supabase configured, this fetches the
+  // shared team data; without it, falls back to this browser's localStorage.
+  useEffect(() => {
+    (async () => {
+      const data = await storageAdapter.getLeads();
+      setLeads(data);
+      setLoading(false);
+    })();
+  }, []);
 
   const saveLead = useCallback((lead) => {
     setLeads((prev) => {
       const exists = prev.find((l) => l.id === lead.id);
-      return exists ? prev.map((l) => l.id === lead.id ? lead : l) : [...prev, lead];
+      const next = exists ? prev.map((l) => l.id === lead.id ? lead : l) : [...prev, lead];
+      storageAdapter.saveLead(lead, next); // fire-and-forget; UI already updated optimistically
+      return next;
     });
     setFormOpen(false);
     setEditLead(null);
@@ -1052,7 +1260,11 @@ export default function App() {
 
   const handleDelete = useCallback(() => {
     if (!deleteLead) return;
-    setLeads((prev) => prev.filter((l) => l.id !== deleteLead.id));
+    setLeads((prev) => {
+      const next = prev.filter((l) => l.id !== deleteLead.id);
+      storageAdapter.deleteLead(deleteLead.id, next);
+      return next;
+    });
     setDeleteLead(null);
   }, [deleteLead]);
 
@@ -1089,7 +1301,12 @@ export default function App() {
             ))}
           </nav>
           <div className="sidebar-footer">
-            <p className="sidebar-count">{leads.length} lead{leads.length !== 1 ? "s" : ""} stored locally</p>
+            <p className="sidebar-count">
+              {loading ? "Loading leads…" : `${leads.length} lead${leads.length !== 1 ? "s" : ""} ${storageAdapter.isRemote ? "synced with team" : "stored locally"}`}
+            </p>
+            <p className={`sidebar-status ${storageAdapter.isRemote ? "sidebar-status-live" : "sidebar-status-local"}`}>
+              {storageAdapter.isRemote ? "● Connected to shared database" : "● Local browser storage only"}
+            </p>
             <Btn variant="primary" className="sidebar-add-btn" onClick={() => { openAdd(); setSidebarOpen(false); }}>☀️ Add Lead</Btn>
           </div>
         </aside>
@@ -1097,9 +1314,18 @@ export default function App() {
         {sidebarOpen && <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />}
 
         <main className="main-content">
-          {view === "dashboard" && <Dashboard leads={leads} onAddLead={openAdd} onViewLead={setViewLead} />}
-          {view === "leads" && <LeadsTable leads={leads} onAdd={openAdd} onEdit={openEdit} onView={setViewLead} onDelete={setDeleteLead} />}
-          {view === "reports" && <Reports leads={leads} />}
+          {loading ? (
+            <div className="loading-state">
+              <div className="loading-spinner" />
+              <p>Loading your leads…</p>
+            </div>
+          ) : (
+            <>
+              {view === "dashboard" && <Dashboard leads={leads} onAddLead={openAdd} onViewLead={setViewLead} />}
+              {view === "leads" && <LeadsTable leads={leads} onAdd={openAdd} onEdit={openEdit} onView={setViewLead} onDelete={setDeleteLead} />}
+              {view === "reports" && <Reports leads={leads} />}
+            </>
+          )}
         </main>
       </div>
 
