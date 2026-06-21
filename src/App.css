@@ -228,6 +228,20 @@ body {
 .confirm-text { font-size: 0.875rem; color: #64748b; margin: 0.25rem 0 1.25rem; }
 .confirm-actions { display: flex; gap: 0.75rem; justify-content: center; }
 
+/* ── Export column picker modal ── */
+.export-modal-sub { font-size: 0.875rem; color: #64748b; margin: 0; }
+.export-select-actions { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.export-count-label { font-size: 0.8125rem; color: #94a3b8; margin-left: auto; }
+.export-column-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0.625rem;
+  background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 0.75rem; padding: 1rem;
+  max-height: 18rem; overflow-y: auto;
+}
+.export-column-item {
+  display: flex; align-items: center; gap: 0.5rem; font-size: 0.8125rem; color: #334155;
+  cursor: pointer; user-select: none;
+}
+
 /* ── Conditional panels ── */
 .panel { border-radius: 0.75rem; padding: 1rem; display: flex; flex-direction: column; gap: 1rem; }
 .panel-orange { background: #fff7ed; border: 1px solid #fed7aa; }
@@ -274,6 +288,9 @@ body {
 /* ── Leads table ── */
 .filter-bar { display: flex; flex-wrap: wrap; gap: 0.75rem; background: white; border-radius: 0.75rem; border: 1px solid #e2e8f0; padding: 1rem; }
 .filter-search { flex: 1; min-width: 180px; }
+.date-filter-bar { align-items: center; }
+.date-field-toggle { display: flex; gap: 0.375rem; padding-right: 0.75rem; border-right: 1px solid #e2e8f0; }
+@media (max-width: 640px) { .date-field-toggle { border-right: none; padding-right: 0; } }
 .table-scroll { overflow-x: auto; }
 .leads-table { width: 100%; min-width: 700px; border-collapse: collapse; }
 .leads-table thead { background: #f8fafc; border-bottom: 1px solid #e2e8f0; }

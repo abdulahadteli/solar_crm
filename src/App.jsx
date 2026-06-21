@@ -266,29 +266,61 @@ const getDateRange = (rangeType, customFrom, customTo) => {
   return null; // "all"
 };
 
-// CSV export
-const toCSV = (leads) => {
-  const headers = [
-    "Name", "Address", "Email", "Phone", "Status", "Needs Follow Up",
-    "Appointment Date", "System Proposed", "Cost Price ($)", "Sale Price ($)",
-    "Gross Profit ($)", "Margin (%)", "Appointment Notes",
-    "Follow Up Date", "Follow Up Notes", "Required Action",
-    "Reason Lost", "Customer Feedback",
-    "Deposit Paid", "Installation Status", "Next Action",
-    "Created", "Updated",
-  ];
-  const rows = leads.map((l) => [
-    l.name, l.address, l.email, l.phone, l.status, l.needsFollowUp ? "Yes" : "No",
-    fmtDateTime(l.appointmentDate), l.systemProposed,
-    fmt(l.costPrice), fmt(l.salePrice),
-    calcProfit(l.salePrice, l.costPrice).toFixed(2),
-    calcMargin(l.salePrice, l.costPrice).toFixed(1),
-    l.appointmentNotes,
-    fmtDate(l.followUpDate), l.followUpNotes, l.requiredAction,
-    l.reasonLost, l.customerFeedback,
-    l.depositPaid ? "Yes" : "No", l.installationStatus, l.nextAction,
-    fmtDateTime(l.createdAt), fmtDateTime(l.updatedAt),
-  ].map((v) => `"${String(v ?? "").replace(/"/g, '""')}"`));
+// ─────────────────────────────────────────────
+// EXPORT COLUMN REGISTRY
+// Single source of truth for every exportable field — used both to
+// render the column-picker checkboxes and to build the actual CSV.
+// ─────────────────────────────────────────────
+const EXPORT_COLUMNS = [
+  { key: "name", label: "Lead Name", get: (l) => l.name },
+  { key: "address", label: "Address", get: (l) => l.address },
+  { key: "email", label: "Email", get: (l) => l.email },
+  { key: "phone", label: "Phone", get: (l) => l.phone },
+  { key: "status", label: "Status", get: (l) => l.status },
+  { key: "needsFollowUp", label: "Needs Follow Up", get: (l) => l.needsFollowUp ? "Yes" : "No" },
+  { key: "appointmentDate", label: "Appointment Date", get: (l) => fmtDateTime(l.appointmentDate) },
+  { key: "systemProposed", label: "System Proposed", get: (l) => l.systemProposed },
+  { key: "costPrice", label: "Cost Price ($)", get: (l) => fmt(l.costPrice) },
+  { key: "salePrice", label: "Sale Price ($)", get: (l) => fmt(l.salePrice) },
+  { key: "grossProfit", label: "Gross Profit ($)", get: (l) => calcProfit(l.salePrice, l.costPrice).toFixed(2) },
+  { key: "margin", label: "Margin (%)", get: (l) => calcMargin(l.salePrice, l.costPrice).toFixed(1) },
+  { key: "appointmentNotes", label: "Appointment Notes", get: (l) => l.appointmentNotes },
+  { key: "followUpDate", label: "Follow Up Date", get: (l) => fmtDate(l.followUpDate) },
+  { key: "followUpNotes", label: "Follow Up Notes", get: (l) => l.followUpNotes },
+  { key: "requiredAction", label: "Required Action", get: (l) => l.requiredAction },
+  { key: "reasonLost", label: "Reason Lost", get: (l) => l.reasonLost },
+  { key: "customerFeedback", label: "Customer Feedback", get: (l) => l.customerFeedback },
+  { key: "depositPaid", label: "Deposit Paid", get: (l) => l.depositPaid ? "Yes" : "No" },
+  { key: "installationStatus", label: "Installation Status", get: (l) => l.installationStatus },
+  { key: "nextAction", label: "Next Action", get: (l) => l.nextAction },
+  { key: "createdAt", label: "Created", get: (l) => fmtDateTime(l.createdAt) },
+  { key: "updatedAt", label: "Updated", get: (l) => fmtDateTime(l.updatedAt) },
+];
+
+const ALL_EXPORT_KEYS = EXPORT_COLUMNS.map((c) => c.key);
+const EXPORT_PREFS_KEY = "urlocalsolar_export_columns";
+
+const getSavedExportColumns = () => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(EXPORT_PREFS_KEY) || "null");
+    if (Array.isArray(saved) && saved.length) {
+      // Filter out any stale keys in case the schema changed
+      return saved.filter((k) => ALL_EXPORT_KEYS.includes(k));
+    }
+  } catch { /* ignore */ }
+  return ALL_EXPORT_KEYS; // default: everything selected
+};
+
+const saveExportColumns = (keys) => {
+  localStorage.setItem(EXPORT_PREFS_KEY, JSON.stringify(keys));
+};
+
+// CSV export — builds output using only the selected column keys,
+// preserving the registry's column order regardless of selection order.
+const toCSV = (leads, columnKeys = ALL_EXPORT_KEYS) => {
+  const cols = EXPORT_COLUMNS.filter((c) => columnKeys.includes(c.key));
+  const headers = cols.map((c) => c.label);
+  const rows = leads.map((l) => cols.map((c) => c.get(l)).map((v) => `"${String(v ?? "").replace(/"/g, '""')}"`));
   return [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
 };
 
@@ -648,6 +680,68 @@ const LeadFormModal = ({ initial, onSave, onClose }) => {
 };
 
 // ─────────────────────────────────────────────
+// EXPORT COLUMN PICKER MODAL
+// Lets the user check/uncheck which fields appear in the CSV export.
+// Defaults to their last-used selection (via getSavedExportColumns),
+// always editable, and remembers the new choice for next time.
+// ─────────────────────────────────────────────
+const ExportColumnModal = ({ onExport, onClose, leadCount }) => {
+  const [selected, setSelected] = useState(() => getSavedExportColumns());
+
+  const toggle = (key) => {
+    setSelected((prev) => prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]);
+  };
+
+  const selectAll = () => setSelected(ALL_EXPORT_KEYS);
+  const selectNone = () => setSelected([]);
+
+  const handleExport = () => {
+    saveExportColumns(selected);
+    onExport(selected);
+    onClose();
+  };
+
+  return (
+    <div className="modal-overlay">
+      <div className="modal modal-md">
+        <div className="modal-header">
+          <div>
+            <p className="modal-eyebrow">Export Setup</p>
+            <h2 className="modal-title">Choose Columns to Export</h2>
+          </div>
+          <button onClick={onClose} className="modal-close">✕</button>
+        </div>
+        <div className="modal-body">
+          <p className="export-modal-sub">{leadCount} lead{leadCount !== 1 ? "s" : ""} will be exported with the columns you select below.</p>
+          <div className="export-select-actions">
+            <Btn variant="ghost" onClick={selectAll}>Select All</Btn>
+            <Btn variant="ghost" onClick={selectNone}>Select None</Btn>
+            <span className="export-count-label">{selected.length} of {ALL_EXPORT_KEYS.length} selected</span>
+          </div>
+          <div className="export-column-grid">
+            {EXPORT_COLUMNS.map((c) => (
+              <label key={c.key} className="export-column-item">
+                <input
+                  type="checkbox"
+                  className="checkbox"
+                  checked={selected.includes(c.key)}
+                  onChange={() => toggle(c.key)}
+                />
+                {c.label}
+              </label>
+            ))}
+          </div>
+        </div>
+        <div className="modal-footer">
+          <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
+          <Btn variant="primary" disabled={selected.length === 0} onClick={handleExport}>⬇ Export {selected.length} Column{selected.length !== 1 ? "s" : ""}</Btn>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ─────────────────────────────────────────────
 // DELETE CONFIRM
 // ─────────────────────────────────────────────
 const DeleteConfirm = ({ lead, onConfirm, onClose }) => (
@@ -987,6 +1081,15 @@ const LeadsTable = ({ leads, onAdd, onEdit, onView, onDelete }) => {
   const [sortField, setSortField] = useState("createdAt");
   const [sortDir, setSortDir] = useState("desc");
 
+  // Date range filter — applies to either appointmentDate or followUpDate,
+  // chosen via dateField toggle. "all" (no range) is the default.
+  const [dateField, setDateField] = useState("appointmentDate"); // appointmentDate | followUpDate
+  const [rangeType, setRangeType] = useState("all"); // today | week | month | custom | all
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
+
+  const dateRange = getDateRange(rangeType, customFrom, customTo);
+
   const filtered = useMemo(() => {
     let rows = [...leads];
     if (search.trim()) {
@@ -1000,6 +1103,15 @@ const LeadsTable = ({ leads, onAdd, onEdit, onView, onDelete }) => {
     if (filterWonLost === "Lost") rows = rows.filter((l) => l.status === "Lost / Not Proceeding");
     if (filterFollowUp === "Yes") rows = rows.filter((l) => l.needsFollowUp);
     if (filterFollowUp === "No") rows = rows.filter((l) => !l.needsFollowUp);
+    if (dateRange) {
+      rows = rows.filter((l) => {
+        const raw = l[dateField];
+        if (!raw) return false;
+        const d = new Date(raw);
+        if (isNaN(d)) return false;
+        return d >= dateRange.start && d <= dateRange.end;
+      });
+    }
 
     rows.sort((a, b) => {
       let va = a[sortField] ?? "";
@@ -1010,7 +1122,7 @@ const LeadsTable = ({ leads, onAdd, onEdit, onView, onDelete }) => {
       return 0;
     });
     return rows;
-  }, [leads, search, filterStatus, filterWonLost, filterFollowUp, sortField, sortDir]);
+  }, [leads, search, filterStatus, filterWonLost, filterFollowUp, dateField, dateRange, sortField, sortDir]);
 
   const toggleSort = (field) => {
     if (sortField === field) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -1023,6 +1135,24 @@ const LeadsTable = ({ leads, onAdd, onEdit, onView, onDelete }) => {
     </th>
   );
 
+  const dateRangeActive = rangeType !== "all";
+
+  // Export column picker modal state. exportTarget tracks which dataset
+  // (filtered vs all) the user clicked Export on, so the modal knows
+  // what to actually export once columns are confirmed.
+  const [exportTarget, setExportTarget] = useState(null); // "filtered" | "all" | null
+
+  const runExport = (columnKeys) => {
+    if (exportTarget === "filtered") {
+      const rangeSuffix = dateRangeActive
+        ? `_${dateField === "appointmentDate" ? "Appts" : "FollowUps"}_${rangeType}`
+        : "";
+      downloadCSV(toCSV(filtered, columnKeys), `UR_Local_Solar_Filtered${rangeSuffix}_${new Date().toISOString().slice(0,10)}.csv`);
+    } else if (exportTarget === "all") {
+      downloadCSV(toCSV(leads, columnKeys), `UR_Local_Solar_All_${new Date().toISOString().slice(0,10)}.csv`);
+    }
+  };
+
   return (
     <div className="page-stack">
       <div className="page-header">
@@ -1031,11 +1161,19 @@ const LeadsTable = ({ leads, onAdd, onEdit, onView, onDelete }) => {
           <p className="page-subtitle">{filtered.length} of {leads.length} leads shown</p>
         </div>
         <div className="btn-row">
-          <Btn variant="secondary" onClick={() => downloadCSV(toCSV(filtered), `UR_Local_Solar_Filtered_${new Date().toISOString().slice(0,10)}.csv`)}>⬇ Export Filtered CSV</Btn>
-          <Btn variant="secondary" onClick={() => downloadCSV(toCSV(leads), `UR_Local_Solar_All_${new Date().toISOString().slice(0,10)}.csv`)}>⬇ Export All CSV</Btn>
+          <Btn variant="secondary" onClick={() => setExportTarget("filtered")}>⬇ Export Filtered CSV</Btn>
+          <Btn variant="secondary" onClick={() => setExportTarget("all")}>⬇ Export All CSV</Btn>
           <Btn variant="primary" onClick={onAdd}>☀️ Add Lead</Btn>
         </div>
       </div>
+
+      {exportTarget && (
+        <ExportColumnModal
+          leadCount={exportTarget === "filtered" ? filtered.length : leads.length}
+          onExport={runExport}
+          onClose={() => setExportTarget(null)}
+        />
+      )}
 
       <div className="filter-bar">
         <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="🔍 Search leads..." className="input filter-search" />
@@ -1053,8 +1191,50 @@ const LeadsTable = ({ leads, onAdd, onEdit, onView, onDelete }) => {
           <option value="Yes">Needs Follow-up</option>
           <option value="No">No Follow-up</option>
         </select>
-        {(search || filterStatus !== "All" || filterWonLost !== "All" || filterFollowUp !== "All") && (
-          <Btn variant="ghost" onClick={() => { setSearch(""); setFilterStatus("All"); setFilterWonLost("All"); setFilterFollowUp("All"); }}>✕ Clear</Btn>
+      </div>
+
+      {/* Date range filter — separate row, applies to either appointment or follow-up date */}
+      <div className="filter-bar date-filter-bar">
+        <div className="date-field-toggle">
+          <button
+            className={`pill-btn ${dateField === "appointmentDate" ? "pill-btn-active" : ""}`}
+            onClick={() => setDateField("appointmentDate")}
+          >
+            📅 Appointment Date
+          </button>
+          <button
+            className={`pill-btn ${dateField === "followUpDate" ? "pill-btn-active" : ""}`}
+            onClick={() => setDateField("followUpDate")}
+          >
+            🔔 Follow-Up Date
+          </button>
+        </div>
+        <div className="range-presets">
+          {[
+            ["all", "Any Date"],
+            ["today", "Today"],
+            ["week", "This Week"],
+            ["month", "This Month"],
+            ["custom", "Custom"],
+          ].map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setRangeType(key)}
+              className={`pill-btn ${rangeType === key ? "pill-btn-active" : ""}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {rangeType === "custom" && (
+          <div className="custom-range-row">
+            <Input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)} />
+            <span className="muted">to</span>
+            <Input type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)} />
+          </div>
+        )}
+        {(search || filterStatus !== "All" || filterWonLost !== "All" || filterFollowUp !== "All" || dateRangeActive) && (
+          <Btn variant="ghost" onClick={() => { setSearch(""); setFilterStatus("All"); setFilterWonLost("All"); setFilterFollowUp("All"); setRangeType("all"); setCustomFrom(""); setCustomTo(""); }}>✕ Clear All Filters</Btn>
         )}
       </div>
 
@@ -1120,6 +1300,7 @@ const Reports = ({ leads }) => {
   const totalCost = leads.reduce((a, l) => a + fmt(l.costPrice), 0);
   const totalProfit = totalSale - totalCost;
   const wonSale = won.reduce((a, l) => a + fmt(l.salePrice), 0);
+  const [showExportModal, setShowExportModal] = useState(false);
 
   return (
     <div className="page-stack">
@@ -1129,10 +1310,18 @@ const Reports = ({ leads }) => {
           <p className="page-subtitle">Generate stakeholder-ready summaries</p>
         </div>
         <div className="btn-row">
-          <Btn variant="secondary" onClick={() => downloadCSV(toCSV(leads), `UR_Local_Solar_All_${new Date().toISOString().slice(0,10)}.csv`)}>⬇ Export All Leads CSV</Btn>
+          <Btn variant="secondary" onClick={() => setShowExportModal(true)}>⬇ Export All Leads CSV</Btn>
           <Btn variant="success" onClick={() => downloadSummaryCSV(leads)}>📊 Export Summary Report</Btn>
         </div>
       </div>
+
+      {showExportModal && (
+        <ExportColumnModal
+          leadCount={leads.length}
+          onExport={(columnKeys) => downloadCSV(toCSV(leads, columnKeys), `UR_Local_Solar_All_${new Date().toISOString().slice(0,10)}.csv`)}
+          onClose={() => setShowExportModal(false)}
+        />
+      )}
 
       <div className="report-grid">
         <div className="card">
