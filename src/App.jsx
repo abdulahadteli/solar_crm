@@ -37,6 +37,36 @@ const supabase = (SUPABASE_URL && SUPABASE_ANON_KEY)
   : null;
 
 // ─────────────────────────────────────────────
+// TIMEZONE-SAFE DATETIME CONVERSION
+// The form's <input type="datetime-local"> gives a naive string like
+// "2026-06-22T14:00" with NO timezone info — it means "2:00 PM in
+// whatever timezone the user is in", nothing more. Postgres' timestamptz
+// column needs an explicit, unambiguous instant (UTC). If we send the
+// naive string as-is, Postgres assumes UTC, silently shifting the time
+// by the user's UTC offset (+10/+11 for Sydney) — which is exactly the
+// "appointment time changes" bug. These two helpers convert explicitly
+// at the boundary so the time the user picks is the time that's saved
+// and the time that's shown back, regardless of timezone.
+// ─────────────────────────────────────────────
+
+// "2026-06-22T14:00" (local, naive) -> "2026-06-22T04:00:00.000Z" (real UTC instant)
+const localInputToUTC = (localStr) => {
+  if (!localStr) return null;
+  const d = new Date(localStr); // JS treats naive "YYYY-MM-DDTHH:mm" as local time — correct here
+  if (isNaN(d)) return null;
+  return d.toISOString();
+};
+
+// "2026-06-22T04:00:00.000Z" (UTC from DB) -> "2026-06-22T14:00" (local, for the datetime-local input)
+const utcToLocalInput = (utcStr) => {
+  if (!utcStr) return "";
+  const d = new Date(utcStr);
+  if (isNaN(d)) return "";
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+
+// ─────────────────────────────────────────────
 // FIELD MAPPING — our app uses camelCase, Postgres uses snake_case
 // ─────────────────────────────────────────────
 const toDbRow = (lead) => ({
@@ -47,7 +77,7 @@ const toDbRow = (lead) => ({
   phone: lead.phone,
   status: lead.status,
   needs_follow_up: lead.needsFollowUp,
-  appointment_date: lead.appointmentDate || null,
+  appointment_date: localInputToUTC(lead.appointmentDate),
   system_proposed: lead.systemProposed,
   appointment_notes: lead.appointmentNotes,
   cost_price: lead.costPrice === "" ? null : fmt(lead.costPrice),
@@ -73,7 +103,7 @@ const fromDbRow = (row) => ({
   phone: row.phone || "",
   status: row.status || "New Lead",
   needsFollowUp: row.needs_follow_up || false,
-  appointmentDate: row.appointment_date || "",
+  appointmentDate: utcToLocalInput(row.appointment_date),
   systemProposed: row.system_proposed || "",
   appointmentNotes: row.appointment_notes || "",
   costPrice: row.cost_price ?? "",
